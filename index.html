@@ -17614,6 +17614,9 @@
         }
 
         function showStationDetail(station, region) {
+            // Hide tooltip first to prevent flickering
+            hideTopologyTooltip();
+
             const detail = document.getElementById('station-detail');
             detail.classList.remove('hidden');
             detail.innerHTML = `
@@ -17648,6 +17651,11 @@
                     </button>
                 </div>
             `;
+
+            // Scroll detail into view smoothly
+            setTimeout(() => {
+                detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }, 100);
         }
 
         // Topology tooltip functions
@@ -18232,32 +18240,71 @@
             const radius = Math.min(centerX, centerY) - 20;
 
             const total = data.reduce((sum, item) => sum + item.value, 0);
-            let startAngle = -Math.PI / 2;
 
-            // Draw slices
-            data.forEach(item => {
-                const sliceAngle = (item.value / total) * 2 * Math.PI;
-                ctx.beginPath();
-                ctx.fillStyle = item.color;
-                ctx.moveTo(centerX, centerY);
-                ctx.arc(centerX, centerY, radius, startAngle, startAngle + sliceAngle);
-                ctx.closePath();
-                ctx.fill();
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                // Add stroke
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 3;
-                ctx.stroke();
+            // Animation variables
+            let animationProgress = 0;
+            const animationDuration = 1000; // 1 second
+            const startTime = performance.now();
 
-                startAngle += sliceAngle;
-            });
+            function animate(currentTime) {
+                const elapsed = currentTime - startTime;
+                animationProgress = Math.min(elapsed / animationDuration, 1);
 
-            // Draw legend
+                // Apply easing function (ease-out-cubic)
+                const eased = 1 - Math.pow(1 - animationProgress, 3);
+
+                // Clear and redraw
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                let startAngle = -Math.PI / 2;
+                let accumulatedAngle = 0;
+
+                // Draw slices with animation
+                data.forEach((item, index) => {
+                    const sliceAngle = (item.value / total) * 2 * Math.PI;
+                    const drawAngle = sliceAngle * eased;
+
+                    // Only draw if this slice should be visible
+                    if (accumulatedAngle < 2 * Math.PI * eased) {
+                        ctx.beginPath();
+                        ctx.fillStyle = item.color;
+                        ctx.moveTo(centerX, centerY);
+                        ctx.arc(centerX, centerY, radius, startAngle, startAngle + Math.min(drawAngle, sliceAngle));
+                        ctx.closePath();
+                        ctx.fill();
+
+                        // Add stroke
+                        ctx.strokeStyle = '#fff';
+                        ctx.lineWidth = 3;
+                        ctx.stroke();
+                    }
+
+                    startAngle += sliceAngle;
+                    accumulatedAngle += sliceAngle;
+                });
+
+                // Continue animation
+                if (animationProgress < 1) {
+                    requestAnimationFrame(animate);
+                } else {
+                    // Animation complete, draw legend
+                    drawLegend(data, legendId, total);
+                }
+            }
+
+            // Start animation
+            requestAnimationFrame(animate);
+        }
+
+        function drawLegend(data, legendId, total) {
             const legendContainer = document.getElementById(legendId);
             legendContainer.innerHTML = data.map(item => {
                 const percent = ((item.value / total) * 100).toFixed(1);
                 return `
-                    <div class="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors">
+                    <div class="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors opacity-0 animate-fade-in">
                         <div class="flex items-center gap-2">
                             <span class="w-4 h-4 rounded" style="background:${item.color}"></span>
                             <span class="text-xs font-bold text-slate-700">${item.label}</span>
@@ -18269,6 +18316,16 @@
                     </div>
                 `;
             }).join('');
+
+            // Animate legend items
+            setTimeout(() => {
+                legendContainer.querySelectorAll('div').forEach((div, idx) => {
+                    setTimeout(() => {
+                        div.classList.remove('opacity-0');
+                        div.classList.add('opacity-100');
+                    }, idx * 50);
+                });
+            }, 50);
         }
 
         // === MAINTENANCE SCHEDULE MANAGEMENT ===
@@ -18420,8 +18477,18 @@
         function renderFilters() {
             // Recommendation: Adding a Fuel Type filter as a premium feature
             const types = ['All', ...new Set(plantsData.map(p => p.type))];
+
+            // Check if filters already exist
+            const existingFilters = document.querySelector('#inventory .filter-chip');
+            if (existingFilters) {
+                // Just update active state
+                updateFilterButtons();
+                return;
+            }
+
             const filterContainer = document.createElement('div');
-            filterContainer.className = 'flex gap-2 mb-8 fade-in-up';
+            filterContainer.className = 'flex gap-2 mb-8 fade-in-up flex-wrap';
+            filterContainer.id = 'filter-buttons-container';
             filterContainer.innerHTML = types.map(t => `
                 <button onclick="setGlobalFilter('${t}')" class="filter-chip ${activeFilter === t ? 'active' : ''}">
                     ${t}
@@ -18429,14 +18496,24 @@
             `).join('');
 
             const inventorySec = document.getElementById('inventory');
-            inventorySec.insertBefore(filterContainer, inventorySec.querySelector('.bg-white'));
+            const sectionTitle = inventorySec.querySelector('h2');
+            sectionTitle.insertAdjacentElement('afterend', filterContainer);
+        }
+
+        function updateFilterButtons() {
+            document.querySelectorAll('.filter-chip').forEach(btn => {
+                const btnText = btn.innerText.trim();
+                if (btnText === activeFilter) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
         }
 
         function setGlobalFilter(type) {
             activeFilter = type;
-            document.querySelectorAll('.filter-chip').forEach(c => {
-                c.classList.toggle('active', (c.innerText === type || (type === "All" && c.innerText === "All")));
-            });
+            updateFilterButtons();
             renderPlantList(document.getElementById('plant-search').value);
         }
 
@@ -18616,7 +18693,12 @@
             const filtered = plantsData.filter(p => {
                 const matchSearch = p.name.toLowerCase().includes(query) || p.location.toLowerCase().includes(query);
                 const matchGrid = gridFilter === 'All' || p.location.includes(gridFilter) || (gridFilter === "Visayas" && !p.location.includes("Luzon") && !p.location.includes("Mindanao"));
-                const matchType = typeFilter === 'All' || p.type.toUpperCase() === typeFilter;
+
+                // Check both dropdown filter AND active technology chip filter
+                const matchDropdown = typeFilter === 'All' || p.type.toUpperCase() === typeFilter;
+                const matchChip = activeFilter === 'All' || p.type.toUpperCase() === activeFilter.toUpperCase();
+                const matchType = matchDropdown && matchChip;
+
                 const matchCap = p.capacity >= capFilter;
 
                 let matchMonth = monthFilter === 'All';
